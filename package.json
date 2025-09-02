@@ -21,11 +21,14 @@
     "dotenv": "^17.2.1",
     "drizzle-orm": "^0.44.5",
     "express": "^5.1.0",
-    "pg": "^8.16.3"
+    "http-status-codes": "^2.3.0",
+    "pg": "^8.16.3",
+    "redis": "^5.8.2"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
+    "@types/http-status-codes": "^1.2.0",
     "@types/node": "^24.3.0",
     "@types/pg": "^8.15.5",
     "drizzle-kit": "^0.31.4",

@@ -1,9 +1,16 @@
 import "dotenv/config";
 import express from "express";
+import cors from "cors";
 import { db } from "./db/index";
+import { corsConfig } from "./utils/config";
+import { redisClient } from "./db/redis";
+import productRoutes from "./routes/products.r";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+app.use(express.json());
+app.use(cors(corsConfig));
 
 app.get("/health", (req, res) => {
   res.status(200).json({
@@ -13,11 +20,18 @@ app.get("/health", (req, res) => {
   });
 });
 
+app.use("/api/v1/products", productRoutes);
+
 async function startServer() {
   try {
     // Explicitly connect to the database before starting the server
     await db.execute("SELECT 1"); // or use your database's connection method (e.g. authenticate())
     console.log("Database connected successfully");
+
+    await redisClient
+      .on("error", (err) => console.log("Redis Client Error", err))
+      .connect();
+    console.log("Redis connected successfully");
 
     // Start the server after database connection is established
     app.listen(PORT, () => {

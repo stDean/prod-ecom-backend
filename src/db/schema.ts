@@ -14,5 +14,9 @@ export const productTable = pgTable("products", {
   price: decimal({ precision: 10, scale: 2 }).notNull(),
   category: varchar({ length: 100 }).notNull(),
   inStock: boolean().notNull().default(true),
-  created_at: timestamp().defaultNow().notNull(),
+  created_at: timestamp("created_at").defaultNow().notNull(),
+  updated_at: timestamp("updated_at")
+    .notNull()
+    .defaultNow()
+    .$onUpdateFn(() => new Date()),
 });
