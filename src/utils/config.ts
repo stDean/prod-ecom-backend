@@ -15,7 +15,7 @@ const allowedOrigins = [
   /* ... add other origins here */
 ];
 
-export const corsConfig: CorsOptions = {
+export const corsOptions: CorsOptions = {
   origin: function (origin, cb) {
     if (!origin || allowedOrigins.indexOf(origin) !== -1) {
       cb(null, true);

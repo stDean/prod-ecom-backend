@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { db } from "./db/index";
-import { corsConfig } from "./utils/config";
+import { corsOptions } from "./utils/config";
 import { redisClient } from "./db/redis";
 import productRoutes from "./routes/products.r";
 
@@ -10,7 +10,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
-app.use(cors(corsConfig));
+app.use(cors(corsOptions));
 
 app.get("/health", (req, res) => {
   res.status(200).json({

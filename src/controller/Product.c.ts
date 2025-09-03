@@ -11,16 +11,69 @@ const DEFAULT_PAGE = 1; // Default page number when not specified
 const DEFAULT_LIMIT = 10; // Default number of items per page
 const MAX_LIMIT = 100; // Maximum allowed items per page to prevent excessive load
 const CACHE_TTL = 300; // Cache time-to-live in seconds (5 minutes)
+const PRODUCT_CACHE_PREFIX = "product:";
+const PRODUCTS_CACHE_PREFIX = "products:";
 
-function getId(req: Request, res: Response): number | Response {
+// Helper functions
+const getId = (req: Request, res: Response): number | null => {
   const id = parseInt(req.params.id);
-
   return isNaN(id)
-    ? res
+    ? (res
         .status(StatusCodes.BAD_REQUEST)
-        .json({ message: "Invalid product ID" })
+        .json({ message: "Invalid product ID" }),
+      null)
     : id;
-}
+};
+
+const invalidateCachePattern = async (pattern: string): Promise<void> => {
+  try {
+    let cursor = "0";
+    do {
+      const res = await redisClient.scan(cursor, {
+        MATCH: pattern,
+        COUNT: 100,
+      });
+      cursor = res.cursor;
+      if (res.keys.length > 0) await redisClient.del(res.keys);
+    } while (cursor !== "0");
+  } catch (error) {
+    console.error("Cache invalidation failed:", error);
+  }
+};
+
+const handleServerError = (
+  res: Response,
+  error: unknown,
+  message: string
+): Response => {
+  console.error(message, error);
+  return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message });
+};
+
+const buildProductsCacheKey = (
+  params: Record<string, string | number | any>
+): string => {
+  return Object.entries(params)
+    .reduce((key, [k, v]) => `${key}${k}:${v}:`, PRODUCTS_CACHE_PREFIX)
+    .slice(0, -1);
+};
+
+const getPaginationParams = (req: Request) => {
+  const page = Math.max(parseInt(req.query.page as string) || DEFAULT_PAGE, 1);
+  const limit = Math.min(
+    parseInt(req.query.limit as string) || DEFAULT_LIMIT,
+    MAX_LIMIT
+  );
+  return { page, limit };
+};
+
+const validSortColumns: Record<string, any> = {
+  id: productTable.id,
+  name: productTable.name,
+  price: productTable.price,
+  category: productTable.category,
+  created_at: productTable.created_at,
+};
 
 export const ProductCtrl = {
   /**
@@ -48,50 +101,26 @@ export const ProductCtrl = {
     try {
       const { name, description, price, category, inStock } = req.body;
 
-      // Validate required fields
       if (!name || !description || !price || !category) {
         return res
           .status(StatusCodes.BAD_REQUEST)
           .json({ message: "Missing required fields" });
       }
 
-      // Insert product into database
       await db.insert(productTable).values({
         name,
         description,
         price,
         category,
-        inStock: inStock ?? true, // Default to true if not provided
+        inStock: inStock ?? true,
       });
 
-      // Invalidate all product-related cache to ensure data consistency
-      try {
-        let cursor = "0";
-        do {
-          // Scan Redis for all keys matching the products pattern
-          const res = await redisClient.scan(cursor, {
-            MATCH: "products:*",
-            COUNT: 100,
-          });
-          cursor = res.cursor;
-          if (res.keys.length > 0) {
-            // Delete all found product cache keys
-            await redisClient.del(res.keys);
-          }
-        } while (cursor !== "0");
-      } catch (redisError) {
-        console.error("Cache invalidation failed:", redisError);
-        // Continue even if cache invalidation fails
-      }
-
+      await invalidateCachePattern(`${PRODUCTS_CACHE_PREFIX}*`);
       return res
         .status(StatusCodes.CREATED)
         .json({ message: "Product created" });
     } catch (error) {
-      console.error("Error creating product:", error);
-      return res
-        .status(StatusCodes.INTERNAL_SERVER_ERROR)
-        .json({ message: "Error creating product" });
+      return handleServerError(res, error, "Error creating product");
     }
   },
 
@@ -131,34 +160,25 @@ export const ProductCtrl = {
    */
   getProducts: async (req: Request, res: Response) => {
     try {
-      // Parse query parameters with defaults
-      const page = parseInt(req.query.page as string) || DEFAULT_PAGE;
-      const limit = Math.min(
-        parseInt(req.query.limit as string) || DEFAULT_LIMIT,
-        MAX_LIMIT
-      );
+      const { page, limit } = getPaginationParams(req);
       const sortBy = (req.query.sortBy as string) || "createdAt";
       const sortOrder = (req.query.sortOrder as string) === "desc" ? desc : asc;
       const category = req.query.category as string;
 
-      // Calculate offset for database query
       const offset = (page - 1) * limit;
+      const cacheKey = buildProductsCacheKey({
+        page,
+        limit,
+        sortBy,
+        sortOrder,
+        category,
+      });
 
-      // Create a unique cache key based on all query parameters
-      const cacheKey = `products:page:${page}:limit:${limit}:sortBy:${sortBy}:sortOrder:${sortOrder}${
-        category ? `:category:${category}` : ""
-      }`;
-
-      console.log("Cache Key:", cacheKey);
-
-      // Try to get cached data first
-      let cachedData;
       try {
-        cachedData = await redisClient.get(cacheKey);
+        const cachedData = await redisClient.get(cacheKey);
         if (cachedData) {
-          // Return cached data if available
           const { products, totalCount, totalPages } = JSON.parse(cachedData);
-          return res.status(StatusCodes.OK).json({
+          return res.json({
             products,
             pagination: {
               page,
@@ -172,79 +192,51 @@ export const ProductCtrl = {
         }
       } catch (redisError) {
         console.error("Redis error:", redisError);
-        // Proceed to database query if cache fails
       }
 
-      // Build where conditions for filtering
-      const whereConditions = [];
-      if (category) {
-        whereConditions.push(eq(productTable.category, category));
-      }
-
-      // Get total count of products (for pagination metadata)
+      const whereConditions = category
+        ? [eq(productTable.category, category)]
+        : [];
       const totalCountResult = await db
         .select({ count: count() })
         .from(productTable)
-        .where(
-          whereConditions.length > 0 ? and(...whereConditions) : undefined
-        );
-
-        console.log("Total Count Result:", totalCountResult);
+        .where(whereConditions.length ? and(...whereConditions) : undefined);
 
       const totalCount = totalCountResult[0]?.count || 0;
       const totalPages = Math.ceil(totalCount / limit);
-
-      // Create a mapping of valid sort columns to prevent SQL injection
-      const validSortColumns: Record<string, any> = {
-        id: productTable.id,
-        name: productTable.name,
-        price: productTable.price,
-        category: productTable.category,
-        createdAt: productTable.created_at,
-        // Add other columns as needed
-      };
-
-      // Get the sort column or default to created_at
       const sortColumn = validSortColumns[sortBy] || productTable.created_at;
 
-      // Build and execute the products query with pagination and sorting
       const products = await db
         .select()
         .from(productTable)
-        .where(whereConditions.length > 0 ? and(...whereConditions) : undefined)
+        .where(whereConditions.length ? and(...whereConditions) : undefined)
         .orderBy(sortOrder(sortColumn))
         .limit(limit)
         .offset(offset);
 
-      // Prepare response data with products and pagination metadata
       const responseData = {
         products,
-        pagination: {
-          page,
-          limit,
-          totalCount,
-          totalPages,
-          hasNext: page < totalPages,
-          hasPrev: page > 1,
-        },
+        pagination: { page, limit, totalCount, totalPages },
       };
 
-      // Cache the result for future requests
       try {
         await redisClient.set(cacheKey, JSON.stringify(responseData), {
           EX: CACHE_TTL,
         });
       } catch (redisError) {
         console.error("Cache set error:", redisError);
-        // Continue even if caching fails
       }
 
-      return res.status(StatusCodes.OK).json(responseData);
+      return res.json({
+        ...responseData,
+        pagination: {
+          ...responseData.pagination,
+          hasNext: page < totalPages,
+          hasPrev: page > 1,
+        },
+      });
     } catch (error) {
-      console.error("Error fetching products:", error);
-      return res
-        .status(StatusCodes.INTERNAL_SERVER_ERROR)
-        .json({ message: "Error fetching products" });
+      return handleServerError(res, error, "Error fetching products");
     }
   },
 
@@ -289,22 +281,21 @@ export const ProductCtrl = {
   getProductById: async (req: Request, res: Response) => {
     try {
       const productId = getId(req, res);
-      if (productId instanceof Response) return; // If getId returned a response, exit
+      if (productId === null) return;
 
-      // Check cache first
-      const cacheKey = `product:${productId}`;
-      const cachedProduct = await redisClient.get(cacheKey);
+      const cacheKey = `${PRODUCT_CACHE_PREFIX}${productId}`;
 
-      if (cachedProduct) {
-        // Return cached product if exists
-        return res.status(StatusCodes.OK).json(JSON.parse(cachedProduct));
+      try {
+        const cachedProduct = await redisClient.get(cacheKey);
+        if (cachedProduct) return res.json(JSON.parse(cachedProduct));
+      } catch (error) {
+        console.error("Redis error:", error);
       }
 
-      // If not in cache, query database
       const product = await db
         .select()
         .from(productTable)
-        .where(eq(productTable.id, productId as number))
+        .where(eq(productTable.id, productId))
         .limit(1)
         .then((rows) => rows[0]);
 
@@ -314,15 +305,15 @@ export const ProductCtrl = {
           .json({ message: "Product not found" });
       }
 
-      // Cache the product with expiration (e.g., 1 hour)
-      await redisClient.setEx(cacheKey, 3600, JSON.stringify(product));
+      try {
+        await redisClient.setEx(cacheKey, 3600, JSON.stringify(product));
+      } catch (error) {
+        console.error("Cache set error:", error);
+      }
 
-      return res.status(StatusCodes.OK).json(product);
+      return res.json(product);
     } catch (error) {
-      console.error("Error fetching product by ID:", error);
-      return res
-        .status(StatusCodes.INTERNAL_SERVER_ERROR)
-        .json({ message: "Error fetching product" });
+      return handleServerError(res, error, "Error fetching product");
     }
   },
 
@@ -376,24 +367,21 @@ export const ProductCtrl = {
   updateProduct: async (req: Request, res: Response) => {
     try {
       const productId = getId(req, res);
-      if (productId instanceof Response) return;
+      if (productId === null) return;
 
-      // Validate request body contains at least one updatable field
       const { name, description, price, category, inStock } = req.body;
       const updatableFields = { name, description, price, category, inStock };
 
-      // Check if at least one valid field is provided
-      const hasValidUpdate = Object.values(updatableFields).some(
-        (value) => value !== undefined && value !== null
-      );
-
-      if (!hasValidUpdate) {
+      if (
+        Object.values(updatableFields).every(
+          (v) => v === undefined || v === null
+        )
+      ) {
         return res
           .status(StatusCodes.BAD_REQUEST)
           .json({ message: "No valid fields provided for update" });
       }
 
-      // Validate price if provided
       if (
         price !== undefined &&
         (isNaN(parseFloat(price)) || parseFloat(price) < 0)
@@ -403,7 +391,6 @@ export const ProductCtrl = {
           .json({ message: "Price must be a valid non-negative number" });
       }
 
-      // Build dynamic update object with only provided fields
       const updateData: any = {};
       if (name !== undefined) updateData.name = name;
       if (description !== undefined) updateData.description = description;
@@ -411,12 +398,11 @@ export const ProductCtrl = {
       if (category !== undefined) updateData.category = category;
       if (inStock !== undefined) updateData.inStock = Boolean(inStock);
 
-      // Update product in database
       const updateResult = await db
         .update(productTable)
         .set(updateData)
-        .where(eq(productTable.id, productId as number))
-        .returning(); // Return the updated record
+        .where(eq(productTable.id, productId))
+        .returning();
 
       if (updateResult.length === 0) {
         return res
@@ -424,24 +410,14 @@ export const ProductCtrl = {
           .json({ message: "Product not found" });
       }
 
-      const updatedProduct = updateResult[0];
+      await Promise.all([
+        invalidateCachePattern(`${PRODUCTS_CACHE_PREFIX}*`),
+        redisClient.del(`${PRODUCT_CACHE_PREFIX}${productId}`),
+      ]);
 
-      // Invalidate cache for this product
-      const cacheKey = `product:${productId}`;
-      try {
-        await redisClient.del(cacheKey);
-        console.log(`Cache invalidated for updated product ${productId}`);
-      } catch (redisError) {
-        console.error("Cache deletion failed:", redisError);
-        // Continue even if cache deletion fails - database is source of truth
-      }
-
-      return res.status(StatusCodes.OK).json(updatedProduct);
+      return res.json(updateResult[0]);
     } catch (error) {
-      console.error("Error updating product:", error);
-      return res
-        .status(StatusCodes.INTERNAL_SERVER_ERROR)
-        .json({ message: "Error updating product" });
+      return handleServerError(res, error, "Error updating product");
     }
   },
 
@@ -488,12 +464,11 @@ export const ProductCtrl = {
   deleteProduct: async (req: Request, res: Response) => {
     try {
       const productId = getId(req, res);
-      if (productId instanceof Response) return; // If getId returned a response, exit
+      if (productId === null) return;
 
-      // Delete product from database
       const deleteResult = await db
         .delete(productTable)
-        .where(eq(productTable.id, productId as number));
+        .where(eq(productTable.id, productId));
 
       if (deleteResult.rowCount === 0) {
         return res
@@ -501,26 +476,14 @@ export const ProductCtrl = {
           .json({ message: "Product not found" });
       }
 
-      // Invalidate cache for this product
-      const cacheKey = `product:${productId}`;
-      try {
-        await redisClient.del(cacheKey);
-        console.log(`Cache invalidated for product ${productId}`);
-      } catch (redisError) {
-        console.error("Cache deletion failed:", redisError);
-        // Continue even if cache deletion fails - database is source of truth
-      }
+      await Promise.all([
+        invalidateCachePattern(`${PRODUCTS_CACHE_PREFIX}*`),
+        redisClient.del(`${PRODUCT_CACHE_PREFIX}${productId}`),
+      ]);
 
-      return res
-        .status(StatusCodes.OK)
-        .json({ message: "Product deleted successfully" });
+      return res.json({ message: "Product deleted successfully" });
     } catch (error) {
-      console.error("Error deleting product:", error);
-      return res
-        .status(StatusCodes.INTERNAL_SERVER_ERROR)
-        .json({ message: "Error deleting product" });
+      return handleServerError(res, error, "Error deleting product");
     }
   },
-
-  searchProducts: async (req: Request, res: Response) => {},
 };
