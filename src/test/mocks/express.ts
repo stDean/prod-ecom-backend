@@ -13,6 +13,14 @@ import { vi } from "vitest";
  * const reqWithParams = mockRequest({ params: { userId: 'abc' } });
  */
 export const mockRequest = (overrides: Partial<Request> = {}): Request => {
+  if (overrides.query) {
+    const stringQuery: Record<string, string> = {};
+    for (const [key, value] of Object.entries(overrides.query)) {
+      stringQuery[key] = String(value);
+    }
+    overrides.query = stringQuery as any;
+  }
+
   return {
     ...overrides, // Merge any provided overrides
   } as unknown as Request; // TypeScript workaround for Express type complexity
@@ -42,6 +50,12 @@ export const mockResponse = (): Response => {
 
   // Mock json() method that returns response for chaining
   res.json = vi.fn().mockReturnValue(res);
+  res.send = vi.fn().mockReturnValue(res);
+
+  // Add mockClear methods to the functions
+  res.status.mockClear = vi.fn();
+  res.json.mockClear = vi.fn();
+  res.send.mockClear = vi.fn();
 
   // Add other Express methods as needed:
   // res.send = jest.fn().mockReturnValue(res);

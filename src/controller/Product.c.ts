@@ -161,7 +161,7 @@ export const ProductCtrl = {
   getProducts: async (req: Request, res: Response) => {
     try {
       const { page, limit } = getPaginationParams(req);
-      const sortBy = (req.query.sortBy as string) || "createdAt";
+      const sortBy = (req.query.sortBy as string) || "created_at";
       const sortOrder = (req.query.sortOrder as string) === "desc" ? desc : asc;
       const category = req.query.category as string;
 
@@ -197,6 +197,7 @@ export const ProductCtrl = {
       const whereConditions = category
         ? [eq(productTable.category, category)]
         : [];
+
       const totalCountResult = await db
         .select({ count: count() })
         .from(productTable)
