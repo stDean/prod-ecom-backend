@@ -662,7 +662,7 @@ describe("Product Controller", () => {
         message: "Error fetching products",
       });
     });
-    
+
     /**
      * @title Cache Set Error Handling
      * @description Verifies that product retrieval succeeds even when caching fails
@@ -706,6 +706,477 @@ describe("Product Controller", () => {
       // Assert
       expect(redisClient.set).toHaveBeenCalled();
       expect(res.json).toHaveBeenCalled(); // Response should still be sent despite cache error
+    });
+  });
+
+  /**
+   * @title getProductById Method Tests
+   * @description Test suite for single product retrieval functionality
+   */
+  describe("getProductById", () => {
+    it("should return product from cache when available", async () => {
+      // Arrange
+      const cachedProduct = { id: 1, name: "Cached Product" };
+      mockRedis.get.mockResolvedValue(JSON.stringify(cachedProduct));
+
+      // Act
+      const req = mockRequest({ params: { id: "1" } });
+      const res = mockResponse();
+      await ProductCtrl.getProductById(req, res);
+
+      // Assert
+      expect(redisClient.get).toHaveBeenCalledWith("product:1");
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith(cachedProduct);
+      expect(db.select).not.toHaveBeenCalled(); // Ensure DB was not queried
+    });
+
+    it("should query database and cache result when cache is empty", async () => {
+      // Arrange
+      const productFromDb = { id: 1, name: "DB Product" };
+      mockRedis.get.mockResolvedValue(null);
+
+      // Mock database query
+      const mockProductQuery = mockDb.select();
+      mockProductQuery.from.mockReturnThis();
+      mockProductQuery.where.mockReturnThis();
+      mockProductQuery.limit.mockResolvedValue([productFromDb]);
+
+      (db.select as Mock).mockReturnValue(mockProductQuery);
+
+      // Act
+      const req = mockRequest({ params: { id: "1" } });
+      const res = mockResponse();
+      await ProductCtrl.getProductById(req, res);
+
+      // Assert
+      expect(redisClient.get).toHaveBeenCalledWith("product:1");
+      expect(db.select).toHaveBeenCalled(); // Ensure DB was queried
+      expect(redisClient.setEx).toHaveBeenCalledWith(
+        "product:1",
+        3600,
+        JSON.stringify(productFromDb)
+      );
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith(productFromDb);
+    });
+
+    it("should return 404 if product not found", async () => {
+      // Arrange
+      mockRedis.get.mockResolvedValue(null);
+
+      // Mock database query to return empty result
+      const mockProductQuery = mockDb.select();
+      mockProductQuery.from.mockReturnThis();
+      mockProductQuery.where.mockReturnThis();
+      mockProductQuery.limit.mockResolvedValue([]);
+
+      (db.select as Mock).mockReturnValue(mockProductQuery);
+
+      // Act
+      const req = mockRequest({ params: { id: "999" } });
+      const res = mockResponse();
+      await ProductCtrl.getProductById(req, res);
+
+      // Assert
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith({ message: "Product not found" });
+    });
+
+    it("should handle database errors gracefully", async () => {
+      // Arrange
+      mockRedis.get.mockResolvedValue(null);
+
+      // Mock database query to throw an error
+      const mockProductQuery = mockDb.select();
+      mockProductQuery.from.mockReturnThis();
+      mockProductQuery.where.mockReturnThis();
+      mockProductQuery.limit.mockRejectedValue(new Error("DB Error"));
+
+      (db.select as Mock).mockReturnValue(mockProductQuery);
+
+      // Act
+      const req = mockRequest({ params: { id: "1" } });
+      const res = mockResponse();
+      await ProductCtrl.getProductById(req, res);
+
+      // Assert
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({
+        message: "Error fetching product",
+      });
+    });
+
+    it("should handle Redis errors gracefully", async () => {
+      // Arrange
+      const productFromDb = { id: 1, name: "DB Product" };
+
+      // Mock Redis to throw an error
+      mockRedis.get.mockRejectedValue(new Error("Redis error"));
+
+      // Mock database query to return the product
+      const mockProductQuery = mockDb.select();
+      mockProductQuery.from.mockReturnThis();
+      mockProductQuery.where.mockReturnThis();
+      mockProductQuery.limit.mockResolvedValue([productFromDb]);
+
+      (db.select as Mock).mockReturnValue(mockProductQuery);
+
+      // Act
+      const req = mockRequest({ params: { id: "1" } });
+      const res = mockResponse();
+      await ProductCtrl.getProductById(req, res);
+
+      // Assert
+      expect(redisClient.get).toHaveBeenCalled(); // Redis was called but failed
+      expect(db.select).toHaveBeenCalled(); // Database should still be queried
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith(productFromDb);
+    });
+
+    it("should handle cache set errors gracefully", async () => {
+      // Arrange
+      const productFromDb = { id: 1, name: "DB Product" };
+      mockRedis.get.mockResolvedValue(null);
+
+      // Mock Redis setEx to throw an error
+      mockRedis.setEx.mockRejectedValue(new Error("Cache set error"));
+
+      // Mock database query to return the product
+      const mockProductQuery = mockDb.select();
+      mockProductQuery.from.mockReturnThis();
+      mockProductQuery.where.mockReturnThis();
+      mockProductQuery.limit.mockResolvedValue([productFromDb]);
+
+      (db.select as Mock).mockReturnValue(mockProductQuery);
+
+      // Act
+      const req = mockRequest({ params: { id: "1" } });
+      const res = mockResponse();
+      await ProductCtrl.getProductById(req, res);
+
+      // Assert
+      expect(redisClient.setEx).toHaveBeenCalled(); // Cache set was attempted but failed
+      expect(res.status).toHaveBeenCalledWith(200); // Response should still be successful
+      expect(res.json).toHaveBeenCalledWith(productFromDb);
+    });
+  });
+
+  /**
+   * @title updateProduct Method Tests
+   * @description Test suite for product update functionality
+   */
+  describe("updateProduct", () => {
+    it("should successfully update a product and invalidate cache", async () => {
+      // Arrange
+      const productId = 1;
+      const updateData = {
+        name: "Updated Product",
+        price: 129.99,
+        description: "Updated description",
+      };
+      const updatedProduct = { id: productId, ...updateData };
+
+      // Mock database update operation
+      const mockUpdate = mockDb.update();
+      mockUpdate.set.mockReturnThis();
+      mockUpdate.where.mockReturnThis();
+      mockUpdate.returning.mockResolvedValue([updatedProduct]);
+      (db.update as Mock).mockReturnValue(mockUpdate);
+
+      // Mock cache invalidation
+      mockRedis.scan.mockResolvedValue({ cursor: "0", keys: [] });
+      mockRedis.del.mockResolvedValue(1);
+
+      // Act
+      const req = mockRequest({
+        params: { id: productId.toString() },
+        body: updateData,
+      });
+      const res = mockResponse();
+      await ProductCtrl.updateProduct(req, res);
+
+      // Assert
+      expect(db.update).toHaveBeenCalledWith(productTable);
+      expect(mockUpdate.set).toHaveBeenCalledWith(updateData);
+      expect(mockUpdate.where).toHaveBeenCalledWith(
+        eq(productTable.id, productId)
+      );
+      expect(mockUpdate.returning).toHaveBeenCalled();
+      expect(redisClient.del).toHaveBeenCalledWith(`product:${productId}`);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith(updatedProduct);
+    });
+
+    it("should return error when no valid fields are provided", async () => {
+      // Arrange
+      const productId = 1;
+
+      // Act
+      const req = mockRequest({
+        params: { id: productId.toString() },
+        body: {}, // Empty body
+      });
+      const res = mockResponse();
+      await ProductCtrl.updateProduct(req, res);
+
+      // Assert
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        message: "No valid fields provided for update",
+      });
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it("should return error when price is invalid", async () => {
+      // Arrange
+      const productId = 1;
+      const invalidData = {
+        name: "Updated Product",
+        price: -10, // Invalid price
+      };
+
+      // Act
+      const req = mockRequest({
+        params: { id: productId.toString() },
+        body: invalidData,
+      });
+      const res = mockResponse();
+      await ProductCtrl.updateProduct(req, res);
+
+      // Assert
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        message: "Price must be a valid non-negative number",
+      });
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it("should return 404 when product is not found", async () => {
+      // Arrange
+      const productId = 999;
+      const updateData = {
+        name: "Updated Product",
+        price: 129.99,
+      };
+
+      // Mock database update operation to return empty result
+      const mockUpdate = mockDb.update();
+      mockUpdate.set.mockReturnThis();
+      mockUpdate.where.mockReturnThis();
+      mockUpdate.returning.mockResolvedValue([]);
+      (db.update as Mock).mockReturnValue(mockUpdate);
+
+      // Act
+      const req = mockRequest({
+        params: { id: productId.toString() },
+        body: updateData,
+      });
+      const res = mockResponse();
+      await ProductCtrl.updateProduct(req, res);
+
+      // Assert
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith({
+        message: "Product not found",
+      });
+    });
+
+    it("should handle database errors gracefully", async () => {
+      // Arrange
+      const productId = 1;
+      const updateData = {
+        name: "Updated Product",
+        price: 129.99,
+      };
+
+      // Mock database update operation to throw an error
+      const mockUpdate = mockDb.update();
+      mockUpdate.set.mockReturnThis();
+      mockUpdate.where.mockReturnThis();
+      mockUpdate.returning.mockRejectedValue(new Error("Database error"));
+      (db.update as Mock).mockReturnValue(mockUpdate);
+
+      // Act
+      const req = mockRequest({
+        params: { id: productId.toString() },
+        body: updateData,
+      });
+      const res = mockResponse();
+      await ProductCtrl.updateProduct(req, res);
+
+      // Assert
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({
+        message: "Error updating product",
+      });
+    });
+
+    it("should convert price to number when provided as string", async () => {
+      // Arrange
+      const productId = 1;
+      const updateData = {
+        name: "Updated Product",
+        price: "129.99", // String price
+      };
+      const updatedProduct = {
+        id: productId,
+        name: "Updated Product",
+        price: 129.99,
+      };
+
+      // Mock database update operation
+      const mockUpdate = mockDb.update();
+      mockUpdate.set.mockReturnThis();
+      mockUpdate.where.mockReturnThis();
+      mockUpdate.returning.mockResolvedValue([updatedProduct]);
+      (db.update as Mock).mockReturnValue(mockUpdate);
+
+      // Mock cache invalidation
+      mockRedis.scan.mockResolvedValue({ cursor: "0", keys: [] });
+      mockRedis.del.mockResolvedValue(1);
+
+      // Act
+      const req = mockRequest({
+        params: { id: productId.toString() },
+        body: updateData,
+      });
+      const res = mockResponse();
+      await ProductCtrl.updateProduct(req, res);
+
+      // Assert
+      expect(mockUpdate.set).toHaveBeenCalledWith({
+        name: "Updated Product",
+        price: 129.99, // Should be converted to number
+      });
+    });
+
+    it("should convert inStock to boolean when provided", async () => {
+      // Arrange
+      const productId = 1;
+      const updateData = {
+        inStock: "true", // String boolean
+      };
+      const updatedProduct = { id: productId, inStock: true };
+
+      // Mock database update operation
+      const mockUpdate = mockDb.update();
+      mockUpdate.set.mockReturnThis();
+      mockUpdate.where.mockReturnThis();
+      mockUpdate.returning.mockResolvedValue([updatedProduct]);
+      (db.update as Mock).mockReturnValue(mockUpdate);
+
+      // Mock cache invalidation
+      mockRedis.scan.mockResolvedValue({ cursor: "0", keys: [] });
+      mockRedis.del.mockResolvedValue(1);
+
+      // Act
+      const req = mockRequest({
+        params: { id: productId.toString() },
+        body: updateData,
+      });
+      const res = mockResponse();
+      await ProductCtrl.updateProduct(req, res);
+
+      // Assert
+      expect(mockUpdate.set).toHaveBeenCalledWith({
+        inStock: true, // Should be converted to boolean
+      });
+    });
+  });
+
+  /**
+   * @title deleteProduct Method Tests
+   * @description Test suite for product deletion functionality
+   */
+  describe("deleteProduct", () => {
+    it("should successfully delete a product and invalidate cache", async () => {
+      // Arrange
+      const productId = 1;
+
+      // Mock database delete operation
+      const mockDelete = mockDb.delete();
+      mockDelete.where.mockResolvedValue({ rowCount: 1 });
+      (db.delete as Mock).mockReturnValue(mockDelete);
+
+      // Mock cache invalidation
+      mockRedis.scan.mockResolvedValue({ cursor: "0", keys: [] });
+      mockRedis.del.mockResolvedValue(1);
+
+      // Act
+      const req = mockRequest({ params: { id: productId.toString() } });
+      const res = mockResponse();
+      await ProductCtrl.deleteProduct(req, res);
+
+      // Assert
+      expect(db.delete).toHaveBeenCalledWith(productTable);
+      expect(mockDelete.where).toHaveBeenCalledWith(
+        eq(productTable.id, productId)
+      );
+      expect(redisClient.del).toHaveBeenCalledWith(`product:${productId}`);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({
+        message: "Product deleted successfully",
+      });
+    });
+
+    it("should return 404 when product is not found", async () => {
+      // Arrange
+      const productId = 999;
+
+      // Mock database delete operation to return no rows affected
+      const mockDelete = mockDb.delete();
+      mockDelete.where.mockResolvedValue({ rowCount: 0 });
+      (db.delete as Mock).mockReturnValue(mockDelete);
+
+      // Act
+      const req = mockRequest({ params: { id: productId.toString() } });
+      const res = mockResponse();
+      await ProductCtrl.deleteProduct(req, res);
+
+      // Assert
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith({
+        message: "Product not found",
+      });
+    });
+
+    it("should handle database errors gracefully", async () => {
+      // Arrange
+      const productId = 1;
+
+      // Mock database delete operation to throw an error
+      const mockDelete = mockDb.delete();
+      mockDelete.where.mockRejectedValue(new Error("Database error"));
+      (db.delete as Mock).mockReturnValue(mockDelete);
+
+      // Act
+      const req = mockRequest({ params: { id: productId.toString() } });
+      const res = mockResponse();
+      await ProductCtrl.deleteProduct(req, res);
+
+      // Assert
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({
+        message: "Error deleting product",
+      });
+    });
+
+    it("should return 400 for invalid product ID", async () => {
+      // Arrange - invalid ID
+      const invalidId = "abc";
+
+      // Act
+      const req = mockRequest({ params: { id: invalidId } });
+      const res = mockResponse();
+      await ProductCtrl.deleteProduct(req, res);
+
+      // Assert
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        message: "Invalid product ID",
+      });
+      expect(db.delete).not.toHaveBeenCalled();
     });
   });
 });

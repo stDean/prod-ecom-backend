@@ -228,7 +228,7 @@ export const ProductCtrl = {
         console.error("Cache set error:", redisError);
       }
 
-      return res.json({
+      return res.status(StatusCodes.OK).json({
         ...responseData,
         pagination: {
           ...responseData.pagination,
@@ -288,7 +288,8 @@ export const ProductCtrl = {
 
       try {
         const cachedProduct = await redisClient.get(cacheKey);
-        if (cachedProduct) return res.json(JSON.parse(cachedProduct));
+        if (cachedProduct)
+          return res.status(StatusCodes.OK).json(JSON.parse(cachedProduct));
       } catch (error) {
         console.error("Redis error:", error);
       }
@@ -312,7 +313,7 @@ export const ProductCtrl = {
         console.error("Cache set error:", error);
       }
 
-      return res.json(product);
+      return res.status(StatusCodes.OK).json(product);
     } catch (error) {
       return handleServerError(res, error, "Error fetching product");
     }
@@ -416,7 +417,7 @@ export const ProductCtrl = {
         redisClient.del(`${PRODUCT_CACHE_PREFIX}${productId}`),
       ]);
 
-      return res.json(updateResult[0]);
+      return res.status(StatusCodes.OK).json(updateResult[0]);
     } catch (error) {
       return handleServerError(res, error, "Error updating product");
     }
@@ -482,7 +483,9 @@ export const ProductCtrl = {
         redisClient.del(`${PRODUCT_CACHE_PREFIX}${productId}`),
       ]);
 
-      return res.json({ message: "Product deleted successfully" });
+      return res
+        .status(StatusCodes.OK)
+        .json({ message: "Product deleted successfully" });
     } catch (error) {
       return handleServerError(res, error, "Error deleting product");
     }
