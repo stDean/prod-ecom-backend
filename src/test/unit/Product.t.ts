@@ -714,6 +714,15 @@ describe("Product Controller", () => {
    * @description Test suite for single product retrieval functionality
    */
   describe("getProductById", () => {
+    /**
+     * @title Cache Hit Scenario
+     * @description Verifies that a product is returned from Redis cache when available
+     * @scenario
+     * 1. Mock Redis to return a cached product
+     * 2. Call getProductById with a valid product ID
+     * 3. Verify response contains cached data and database is not queried
+     * @expected Should return product from cache with 200 status
+     */
     it("should return product from cache when available", async () => {
       // Arrange
       const cachedProduct = { id: 1, name: "Cached Product" };
@@ -731,6 +740,16 @@ describe("Product Controller", () => {
       expect(db.select).not.toHaveBeenCalled(); // Ensure DB was not queried
     });
 
+    /**
+     * @title Cache Miss with Database Fallback
+     * @description Verifies that a product is queried from database and cached when not in Redis
+     * @scenario
+     * 1. Mock Redis to return null (cache miss)
+     * 2. Mock database to return a product
+     * 3. Call getProductById with a valid product ID
+     * 4. Verify database is queried, result is cached, and response is correct
+     * @expected Should query database, cache result, and return product with 200 status
+     */
     it("should query database and cache result when cache is empty", async () => {
       // Arrange
       const productFromDb = { id: 1, name: "DB Product" };
@@ -761,6 +780,16 @@ describe("Product Controller", () => {
       expect(res.json).toHaveBeenCalledWith(productFromDb);
     });
 
+    /**
+     * @title Product Not Found
+     * @description Verifies proper handling when a product doesn't exist in database
+     * @scenario
+     * 1. Mock Redis to return null
+     * 2. Mock database to return empty result
+     * 3. Call getProductById with a non-existent product ID
+     * 4. Verify 404 response with appropriate message
+     * @expected Should return 404 status with "Product not found" message
+     */
     it("should return 404 if product not found", async () => {
       // Arrange
       mockRedis.get.mockResolvedValue(null);
@@ -783,6 +812,16 @@ describe("Product Controller", () => {
       expect(res.json).toHaveBeenCalledWith({ message: "Product not found" });
     });
 
+    /**
+     * @title Database Error Handling
+     * @description Verifies graceful handling of database errors
+     * @scenario
+     * 1. Mock Redis to return null
+     * 2. Mock database to throw an error
+     * 3. Call getProductById with a valid product ID
+     * 4. Verify 500 response with appropriate message
+     * @expected Should return 500 status with "Error fetching product" message
+     */
     it("should handle database errors gracefully", async () => {
       // Arrange
       mockRedis.get.mockResolvedValue(null);
@@ -807,6 +846,16 @@ describe("Product Controller", () => {
       });
     });
 
+    /**
+     * @title Redis Error Handling
+     * @description Verifies that database fallback works when Redis fails
+     * @scenario
+     * 1. Mock Redis to throw an error
+     * 2. Mock database to return a product
+     * 3. Call getProductById with a valid product ID
+     * 4. Verify database is queried and response is successful despite Redis error
+     * @expected Should query database and return product with 200 status despite Redis error
+     */
     it("should handle Redis errors gracefully", async () => {
       // Arrange
       const productFromDb = { id: 1, name: "DB Product" };
@@ -834,6 +883,17 @@ describe("Product Controller", () => {
       expect(res.json).toHaveBeenCalledWith(productFromDb);
     });
 
+    /**
+     * @title Cache Set Error Handling
+     * @description Verifies that product retrieval succeeds even when caching fails
+     * @scenario
+     * 1. Mock Redis to return null
+     * 2. Mock Redis setEx to throw an error
+     * 3. Mock database to return a product
+     * 4. Call getProductById with a valid product ID
+     * 5. Verify response is successful despite cache set error
+     * @expected Should return product with 200 status despite cache set error
+     */
     it("should handle cache set errors gracefully", async () => {
       // Arrange
       const productFromDb = { id: 1, name: "DB Product" };
@@ -867,6 +927,16 @@ describe("Product Controller", () => {
    * @description Test suite for product update functionality
    */
   describe("updateProduct", () => {
+    /**
+     * @title Successful Product Update
+     * @description Verifies that a product can be successfully updated with cache invalidation
+     * @scenario
+     * 1. Mock database update to return updated product
+     * 2. Mock cache invalidation to succeed
+     * 3. Call updateProduct with valid data
+     * 4. Verify database update, cache invalidation, and successful response
+     * @expected Should update product, invalidate cache, and return updated product with 200 status
+     */
     it("should successfully update a product and invalidate cache", async () => {
       // Arrange
       const productId = 1;
@@ -908,6 +978,14 @@ describe("Product Controller", () => {
       expect(res.json).toHaveBeenCalledWith(updatedProduct);
     });
 
+    /**
+     * @title Validation - No Update Fields
+     * @description Verifies proper handling when no valid fields are provided for update
+     * @scenario
+     * 1. Call updateProduct with empty request body
+     * 2. Verify 400 response with appropriate message
+     * @expected Should return 400 status with "No valid fields provided for update" message
+     */
     it("should return error when no valid fields are provided", async () => {
       // Arrange
       const productId = 1;
@@ -928,6 +1006,14 @@ describe("Product Controller", () => {
       expect(db.update).not.toHaveBeenCalled();
     });
 
+    /**
+     * @title Validation - Invalid Price
+     * @description Verifies proper handling when an invalid price is provided
+     * @scenario
+     * 1. Call updateProduct with negative price value
+     * 2. Verify 400 response with appropriate message
+     * @expected Should return 400 status with "Price must be a valid non-negative number" message
+     */
     it("should return error when price is invalid", async () => {
       // Arrange
       const productId = 1;
@@ -952,6 +1038,15 @@ describe("Product Controller", () => {
       expect(db.update).not.toHaveBeenCalled();
     });
 
+    /**
+     * @title Product Not Found During Update
+     * @description Verifies proper handling when updating a non-existent product
+     * @scenario
+     * 1. Mock database update to return empty result
+     * 2. Call updateProduct with non-existent product ID
+     * 3. Verify 404 response with appropriate message
+     * @expected Should return 404 status with "Product not found" message
+     */
     it("should return 404 when product is not found", async () => {
       // Arrange
       const productId = 999;
@@ -982,6 +1077,15 @@ describe("Product Controller", () => {
       });
     });
 
+    /**
+     * @title Database Error Handling During Update
+     * @description Verifies graceful handling of database errors during product update
+     * @scenario
+     * 1. Mock database update to throw an error
+     * 2. Call updateProduct with valid data
+     * 3. Verify 500 response with appropriate message
+     * @expected Should return 500 status with "Error updating product" message
+     */
     it("should handle database errors gracefully", async () => {
       // Arrange
       const productId = 1;
@@ -1012,6 +1116,15 @@ describe("Product Controller", () => {
       });
     });
 
+    /**
+     * @title Data Type Conversion - Price
+     * @description Verifies that string prices are properly converted to numbers
+     * @scenario
+     * 1. Mock database update to return updated product
+     * 2. Call updateProduct with string price value
+     * 3. Verify price is converted to number in database call
+     * @expected Should convert string price to number before database update
+     */
     it("should convert price to number when provided as string", async () => {
       // Arrange
       const productId = 1;
@@ -1051,6 +1164,15 @@ describe("Product Controller", () => {
       });
     });
 
+    /**
+     * @title Data Type Conversion - Boolean
+     * @description Verifies that string boolean values are properly converted to booleans
+     * @scenario
+     * 1. Mock database update to return updated product
+     * 2. Call updateProduct with string boolean value
+     * 3. Verify boolean is properly converted in database call
+     * @expected Should convert string boolean to actual boolean before database update
+     */
     it("should convert inStock to boolean when provided", async () => {
       // Arrange
       const productId = 1;
@@ -1090,6 +1212,16 @@ describe("Product Controller", () => {
    * @description Test suite for product deletion functionality
    */
   describe("deleteProduct", () => {
+    /**
+     * @title Successful Product Deletion
+     * @description Verifies that a product can be successfully deleted with cache invalidation
+     * @scenario
+     * 1. Mock database delete to succeed
+     * 2. Mock cache invalidation to succeed
+     * 3. Call deleteProduct with valid product ID
+     * 4. Verify database deletion, cache invalidation, and successful response
+     * @expected Should delete product, invalidate cache, and return success message with 200 status
+     */
     it("should successfully delete a product and invalidate cache", async () => {
       // Arrange
       const productId = 1;
@@ -1120,6 +1252,15 @@ describe("Product Controller", () => {
       });
     });
 
+    /**
+     * @title Product Not Found During Deletion
+     * @description Verifies proper handling when deleting a non-existent product
+     * @scenario
+     * 1. Mock database delete to return no rows affected
+     * 2. Call deleteProduct with non-existent product ID
+     * 3. Verify 404 response with appropriate message
+     * @expected Should return 404 status with "Product not found" message
+     */
     it("should return 404 when product is not found", async () => {
       // Arrange
       const productId = 999;
@@ -1141,6 +1282,15 @@ describe("Product Controller", () => {
       });
     });
 
+    /**
+     * @title Database Error Handling During Deletion
+     * @description Verifies graceful handling of database errors during product deletion
+     * @scenario
+     * 1. Mock database delete to throw an error
+     * 2. Call deleteProduct with valid product ID
+     * 3. Verify 500 response with appropriate message
+     * @expected Should return 500 status with "Error deleting product" message
+     */
     it("should handle database errors gracefully", async () => {
       // Arrange
       const productId = 1;
@@ -1162,6 +1312,14 @@ describe("Product Controller", () => {
       });
     });
 
+    /**
+     * @title Validation - Invalid Product ID
+     * @description Verifies proper handling when an invalid product ID is provided
+     * @scenario
+     * 1. Call deleteProduct with non-numeric product ID
+     * 2. Verify 400 response with appropriate message
+     * @expected Should return 400 status with "Invalid product ID" message
+     */
     it("should return 400 for invalid product ID", async () => {
       // Arrange - invalid ID
       const invalidId = "abc";

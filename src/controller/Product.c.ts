@@ -1,10 +1,10 @@
+import { and, asc, count, desc, eq } from "drizzle-orm";
 import { Request, Response } from "express";
 import { StatusCodes } from "http-status-codes";
-import { redisClient } from "../db/redis";
 import { db } from "../db";
+import { redisClient } from "../db/redis";
 import { productTable } from "../db/schema";
-import { asc, desc, sql, eq, and, count } from "drizzle-orm";
-import { get } from "http";
+import { getId } from "../utils/helper";
 
 // Constants for cache configuration
 const DEFAULT_PAGE = 1; // Default page number when not specified
@@ -15,16 +15,6 @@ const PRODUCT_CACHE_PREFIX = "product:";
 const PRODUCTS_CACHE_PREFIX = "products:";
 
 // Helper functions
-const getId = (req: Request, res: Response): number | null => {
-  const id = parseInt(req.params.id);
-  return isNaN(id)
-    ? (res
-        .status(StatusCodes.BAD_REQUEST)
-        .json({ message: "Invalid product ID" }),
-      null)
-    : id;
-};
-
 const invalidateCachePattern = async (pattern: string): Promise<void> => {
   try {
     let cursor = "0";

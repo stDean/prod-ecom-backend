@@ -5,6 +5,7 @@ import { db } from "./db/index";
 import { corsOptions } from "./utils/config";
 import { redisClient } from "./db/redis";
 import productRoutes from "./routes/products.r";
+import cartRouter from "./routes/cart.r";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -21,6 +22,7 @@ app.get("/health", (req, res) => {
 });
 
 app.use("/api/v1/products", productRoutes);
+app.use("/api/v1/cart", cartRouter);
 
 async function startServer() {
   try {
