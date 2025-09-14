@@ -31,6 +31,11 @@ export const mockRedis = {
   set: vi.fn().mockResolvedValue("OK"),
   setEx: vi.fn().mockResolvedValue("OK"),
   del: vi.fn().mockResolvedValue(1),
+  hSet: vi.fn().mockResolvedValue("OK"),
+  expire: vi.fn().mockResolvedValue("OK"),
+  hGet: vi.fn(),
+  hGetAll: vi.fn(),
+  hDel: vi.fn().mockResolvedValue(1),
 };
 
 // Setup default mocks
