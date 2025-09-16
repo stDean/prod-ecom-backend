@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq } from "drizzle-orm";
+import { and, asc, count, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { Request, Response } from "express";
 import { StatusCodes } from "http-status-codes";
 import { db } from "../db";
@@ -478,6 +478,161 @@ export const ProductCtrl = {
         .json({ message: "Product deleted successfully" });
     } catch (error) {
       return handleServerError(res, error, "Error deleting product");
+    }
+  },
+
+  /**
+   * @title Search Products
+   * @description Search products using simple ILIKE queries with caching
+   * Supports searching by name, description, and category with optional filters
+   * Results are cached for 5 minutes to improve performance
+   *
+   * @route GET /api/products/search
+   *
+   * @param {Request} req Express request object containing:
+   *   - q (query) in query parameters (required)
+   *   - page (optional) for pagination (default: 1)
+   *   - limit (optional) for results per page (default: 10)
+   *   - category (optional) for filtering by category
+   *   - minPrice (optional) for minimum price filter
+   *   - maxPrice (optional) for maximum price filter
+   *   - inStock (optional) for in-stock filter (true/false)
+   * @param {Response} res Express response object
+   *
+   * @returns {Promise<void>} Sends JSON response with search results or error
+   *
+   * @throws {400} If search query is missing
+   * @throws {500} If there's a server error during the operation
+   *
+   * @example
+   * // Basic search
+   * GET /api/products/search?q=laptop
+   *
+   * @example
+   * // Search with pagination
+   * GET /api/products/search?q=laptop&page=2&limit=5
+   *
+   * @example
+   * // Search with filters
+   * GET /api/products/search?q=laptop&category=electronics&minPrice=500&maxPrice=2000&inStock=true
+   */
+  searchProducts: async (req: Request, res: Response) => {
+    try {
+      const {
+        q,
+        page = 1,
+        limit = 10,
+        category,
+        minPrice,
+        maxPrice,
+        inStock,
+      } = req.query;
+
+      if (!q) {
+        return res.status(StatusCodes.BAD_REQUEST).json({
+          error: "Search query is required",
+        });
+      }
+
+      // Create a cache key based on the search parameters
+      const cacheKey = `search:${q}:${page}:${limit}:${category || ""}:${
+        minPrice || ""
+      }:${maxPrice || ""}:${inStock || ""}`;
+
+      // Try to get cached results with error handling
+      let cachedResults = null;
+      try {
+        cachedResults = await redisClient.get(cacheKey);
+        if (cachedResults) {
+          return res.status(StatusCodes.OK).json(JSON.parse(cachedResults));
+        }
+      } catch (cacheError) {
+        console.error("Redis cache get error:", cacheError);
+        // Continue with database query if cache fails
+      }
+
+      const pageNum = parseInt(page as string);
+      const limitNum = parseInt(limit as string);
+      const offset = (pageNum - 1) * limitNum;
+
+      // Build the where clause
+      let whereClause = or(
+        ilike(productTable.name, `%${q}%`),
+        ilike(productTable.description, `%${q}%`),
+        ilike(productTable.category, `%${q}%`)
+      );
+
+      // Add filters if provided
+      if (category) {
+        whereClause = and(
+          whereClause,
+          ilike(productTable.category, `%${category}%`)
+        );
+      }
+
+      if (minPrice) {
+        whereClause = and(
+          whereClause,
+          sql`${productTable.price} >= ${minPrice}`
+        );
+      }
+
+      if (maxPrice) {
+        whereClause = and(
+          whereClause,
+          sql`${productTable.price} <= ${maxPrice}`
+        );
+      }
+
+      if (inStock !== undefined) {
+        const inStockBool = inStock === "true" || inStock === "1";
+        whereClause = and(
+          whereClause,
+          sql`${productTable.inStock} = ${inStockBool}`
+        );
+      }
+
+      // Get search results
+      const results = await db
+        .select()
+        .from(productTable)
+        .where(whereClause)
+        .orderBy(productTable.name)
+        .limit(limitNum)
+        .offset(offset);
+
+      // Get total count for pagination
+      const totalResult = await db
+        .select({ count: count() })
+        .from(productTable)
+        .where(whereClause);
+
+      const total = totalResult[0]?.count || 0;
+      const totalPages = Math.ceil(total / limitNum);
+
+      const resultData = {
+        results,
+        total,
+        page: pageNum,
+        totalPages,
+        hasNext: pageNum < totalPages,
+        hasPrev: pageNum > 1,
+      };
+
+      // Cache the results with error handling
+      try {
+        await redisClient.setEx(cacheKey, 300, JSON.stringify(resultData));
+      } catch (cacheError) {
+        console.error("Redis cache set error:", cacheError);
+        // Continue even if caching fails
+      }
+
+      res.status(StatusCodes.OK).json(resultData);
+    } catch (error) {
+      console.error("Error searching products:", error);
+      res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+        error: "Internal server error during search",
+      });
     }
   },
 };

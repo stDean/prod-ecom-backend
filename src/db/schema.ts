@@ -30,6 +30,9 @@ export const productTable = pgTable(
     index("price_idx").on(table.price),
     index("in_stock_idx").on(table.inStock),
     index("productId_idx").on(table.id),
+    index("search_name_idx").on(table.name),
+    index("search_description_idx").on(table.description),
+    index("search_category_idx").on(table.category),
   ]
 );
 

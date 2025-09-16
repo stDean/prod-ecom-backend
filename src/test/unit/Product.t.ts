@@ -6,6 +6,7 @@ import { redisClient } from "../../db/redis";
 import { productTable } from "../../db/schema";
 import { mockDb, mockRedis, resetMocks } from "../mocks/db";
 import { and, asc, desc, eq } from "drizzle-orm";
+import { StatusCodes } from "http-status-codes";
 
 // Mock the dependencies
 vi.mock("../../db");
@@ -1335,6 +1336,430 @@ describe("Product Controller", () => {
         message: "Invalid product ID",
       });
       expect(db.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * @title Search Products Method Tests
+   * @description Test suite for product search functionality with caching
+   */
+  describe("searchProducts", () => {
+    /**
+     * @title Successful Search with Cache Miss
+     * @description Verifies that products can be searched with database query when not in cache
+     * @scenario
+     * 1. Arrange: Create search parameters and mock database response
+     * 2. Act: Call searchProducts with mock request/response
+     * 3. Assert: Verify database query, cache storage, and response format
+     * @expected Products should be searched, cached, and returned
+     */
+    it("p should search products and cache results when cache miss", async () => {
+      // Arrange
+      const searchParams = {
+        q: "laptop",
+        page: "1",
+        limit: "10",
+      };
+
+      const mockProducts = [
+        {
+          id: 1,
+          name: "Gaming Laptop",
+          description: "High performance gaming laptop",
+          price: "1299.99",
+          category: "Electronics",
+          inStock: true,
+          created_at: new Date(),
+          updated_at: new Date(),
+        },
+      ];
+
+      const mockCount = [{ count: 1 }];
+
+      // Mock cache miss
+      mockRedis.get.mockResolvedValue(null);
+
+      // Mock database responses with proper chaining
+      const mockSelect = {
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        orderBy: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        offset: vi.fn().mockResolvedValue(mockProducts),
+      };
+
+      const mockCountSelect = {
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockResolvedValue(mockCount),
+      };
+
+      (db.select as Mock)
+        .mockReturnValueOnce(mockSelect)
+        .mockReturnValueOnce(mockCountSelect);
+
+      // Act
+      const req = mockRequest({ query: searchParams });
+      const res = mockResponse();
+      await ProductCtrl.searchProducts(req, res);
+
+      // Assert - update the expected cache key
+      expect(mockRedis.get).toHaveBeenCalledWith("search:laptop:1:10::::");
+      expect(db.select).toHaveBeenCalledTimes(2);
+      expect(mockRedis.setEx).toHaveBeenCalledWith(
+        "search:laptop:1:10::::",
+        300,
+        expect.any(String)
+      );
+      expect(res.status).toHaveBeenCalledWith(StatusCodes.OK);
+    });
+
+    /**
+     * @title Cache Hit Scenario
+     * @description Verifies that cached results are returned when available
+     * @scenario
+     * 1. Arrange: Mock Redis to return cached results
+     * 2. Act: Call searchProducts
+     * 3. Assert: Verify cache retrieval and response with cached data
+     * @expected Cached results should be returned without database query
+     */
+    it("p should return cached results when available", async () => {
+      // Arrange
+      const searchParams = {
+        q: "laptop",
+        page: "1",
+        limit: "10",
+      };
+
+      const cachedResults = {
+        results: [
+          {
+            id: 1,
+            name: "Gaming Laptop",
+            description: "High performance gaming laptop",
+            price: "1299.99",
+            category: "Electronics",
+            inStock: true,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+        ],
+        total: 1,
+        page: 1,
+        totalPages: 1,
+        hasNext: false,
+        hasPrev: false,
+      };
+
+      // Mock cache hit
+      mockRedis.get.mockResolvedValue(JSON.stringify(cachedResults));
+
+      // Act
+      const req = mockRequest({ query: searchParams });
+      const res = mockResponse();
+      await ProductCtrl.searchProducts(req, res);
+
+      // Assert
+      expect(mockRedis.get).toHaveBeenCalledWith("search:laptop:1:10::::");
+      expect(db.select).not.toHaveBeenCalled(); // Should not query database
+      expect(res.status).toHaveBeenCalledWith(StatusCodes.OK);
+      expect(res.json).toHaveBeenCalledWith(cachedResults);
+    });
+
+    /**
+     * @title Search with All Filters
+     * @description Verifies that search works with all available filters
+     * @scenario
+     * 1. Arrange: Create search parameters with all filters
+     * 2. Act: Call searchProducts with mock request/response
+     * 3. Assert: Verify correct cache key generation and database query
+     * @expected Search should work with all filter combinations
+     */
+    it("p should handle search with all filters", async () => {
+      // Arrange
+      const searchParams = {
+        q: "laptop",
+        page: "2",
+        limit: "5",
+        category: "electronics",
+        minPrice: "500",
+        maxPrice: "2000",
+        inStock: "true",
+      };
+
+      // Mock cache miss
+      mockRedis.get.mockResolvedValue(null);
+
+      // Mock database responses
+      const mockSelect = mockDb.select();
+      const mockCountSelect = mockDb.select();
+
+      (db.select as Mock)
+        .mockReturnValueOnce(mockSelect)
+        .mockReturnValueOnce(mockCountSelect);
+
+      // Act
+      const req = mockRequest({ query: searchParams });
+      const res = mockResponse();
+      await ProductCtrl.searchProducts(req, res);
+
+      // Assert
+      expect(mockRedis.get).toHaveBeenCalledWith(
+        "search:laptop:2:5:electronics:500:2000:true"
+      );
+      expect(db.select).toHaveBeenCalledTimes(2);
+      expect(mockRedis.setEx).toHaveBeenCalledWith(
+        "search:laptop:2:5:electronics:500:2000:true",
+        300,
+        expect.any(String)
+      );
+    });
+
+    /**
+     * @title Missing Query Parameter Validation
+     * @description Verifies that search fails when query parameter is missing
+     * @scenario
+     * 1. Arrange: Create search parameters without q parameter
+     * 2. Act: Call searchProducts
+     * 3. Assert: Verify 400 response with error message
+     * @expected Should return 400 error when query parameter is missing
+     */
+    it("p should fail if query parameter is missing", async () => {
+      // Arrange
+      const searchParams = {
+        page: "1",
+        limit: "10",
+        // Missing q parameter
+      };
+
+      // Act
+      const req = mockRequest({ query: searchParams });
+      const res = mockResponse();
+      await ProductCtrl.searchProducts(req, res);
+
+      // Assert
+      expect(res.status).toHaveBeenCalledWith(StatusCodes.BAD_REQUEST);
+      expect(res.json).toHaveBeenCalledWith({
+        error: "Search query is required",
+      });
+      expect(db.select).not.toHaveBeenCalled();
+      expect(mockRedis.get).not.toHaveBeenCalled();
+    });
+
+    /**
+     * @title Database Error Handling
+     * @description Verifies graceful handling of database errors during search
+     * @scenario
+     * 1. Arrange: Mock database to throw error
+     * 2. Act: Call searchProducts
+     * 3. Assert: Verify 500 response with error message
+     * @expected Should return 500 error when database operation fails
+     */
+    it("p should handle database errors gracefully", async () => {
+      // Arrange
+      const searchParams = {
+        q: "laptop",
+        page: "1",
+        limit: "10",
+      };
+
+      // Mock cache miss
+      mockRedis.get.mockResolvedValue(null);
+
+      // Mock database to throw error
+      const mockSelect = mockDb.select();
+      mockSelect.from.mockRejectedValue(new Error("Database error"));
+
+      (db.select as Mock).mockReturnValue(mockSelect);
+
+      // Act
+      const req = mockRequest({ query: searchParams });
+      const res = mockResponse();
+      await ProductCtrl.searchProducts(req, res);
+
+      // Assert
+      expect(res.status).toHaveBeenCalledWith(
+        StatusCodes.INTERNAL_SERVER_ERROR
+      );
+      expect(res.json).toHaveBeenCalledWith({
+        error: "Internal server error during search",
+      });
+    });
+
+    /**
+     * @title Cache Error Handling
+     * @description Verifies that search succeeds even when cache operations fail
+     * @scenario
+     * 1. Arrange: Mock Redis to throw error during get operation
+     * 2. Act: Call searchProducts
+     * 3. Assert: Verify search still succeeds with database fallback
+     * @expected Should search products despite Redis errors
+     */
+    it("p should handle Redis errors gracefully during cache retrieval", async () => {
+      // Arrange
+      const searchParams = {
+        q: "laptop",
+        page: "1",
+        limit: "10",
+      };
+
+      const mockProducts = [
+        {
+          id: 1,
+          name: "Gaming Laptop",
+          description: "High performance gaming laptop",
+          price: "1299.99",
+          category: "Electronics",
+          inStock: true,
+          created_at: new Date(),
+          updated_at: new Date(),
+        },
+      ];
+
+      const mockCount = [{ count: 1 }];
+
+      // Mock Redis get to throw an error
+      mockRedis.get.mockRejectedValue(new Error("Redis error"));
+
+      // Mock database responses
+      const mockSelect = mockDb.select();
+      const mockCountSelect = mockDb.select();
+
+      (db.select as Mock)
+        .mockReturnValueOnce(mockSelect)
+        .mockReturnValueOnce(mockCountSelect);
+
+      // Act
+      const req = mockRequest({ query: searchParams });
+      const res = mockResponse();
+      await ProductCtrl.searchProducts(req, res);
+
+      // Assert - should still succeed despite Redis error
+      expect(db.select).toHaveBeenCalledTimes(2);
+      expect(res.status).toHaveBeenCalledWith(StatusCodes.OK);
+    });
+
+    /**
+     * @title Cache Set Error Handling
+     * @description Verifies that search succeeds even when cache set operation fails
+     * @scenario
+     * 1. Arrange: Mock Redis setEx to throw error
+     * 2. Act: Call searchProducts
+     * 3. Assert: Verify search still succeeds despite cache set failure
+     * @expected Should return search results despite cache set errors
+     */
+    it("p should handle Redis errors gracefully during cache storage", async () => {
+      // Arrange
+      const searchParams = {
+        q: "laptop",
+        page: "1",
+        limit: "10",
+      };
+
+      const mockProducts = [
+        {
+          id: 1,
+          name: "Gaming Laptop",
+          description: "High performance gaming laptop",
+          price: "1299.99",
+          category: "Electronics",
+          inStock: true,
+          created_at: new Date(),
+          updated_at: new Date(),
+        },
+      ];
+
+      const mockCount = [{ count: 1 }];
+
+      // Mock cache miss
+      mockRedis.get.mockResolvedValue(null);
+
+      // Mock Redis setEx to throw an error
+      mockRedis.setEx.mockRejectedValue(new Error("Redis set error"));
+
+      // Mock database responses
+      const mockSelect = mockDb.select();
+      const mockCountSelect = mockDb.select();
+
+      (db.select as Mock)
+        .mockReturnValueOnce(mockSelect)
+        .mockReturnValueOnce(mockCountSelect);
+
+      // Act
+      const req = mockRequest({ query: searchParams });
+      const res = mockResponse();
+      await ProductCtrl.searchProducts(req, res);
+
+      // Assert - should still succeed despite Redis error
+      expect(db.select).toHaveBeenCalledTimes(2);
+      expect(res.status).toHaveBeenCalledWith(StatusCodes.OK);
+    });
+
+    /**
+     * @title Pagination Calculation
+     * @description Verifies correct pagination calculations
+     * @scenario
+     * 1. Arrange: Create search with multiple pages of results
+     * 2. Act: Call searchProducts
+     * 3. Assert: Verify correct pagination metadata in response
+     * @expected Should calculate pagination metadata correctly
+     */
+    it("should calculate pagination metadata correctly", async () => {
+      // Arrange
+      const searchParams = {
+        q: "laptop",
+        page: "2",
+        limit: "5",
+      };
+
+      const mockProducts = Array(5).fill({
+        id: 1,
+        name: "Gaming Laptop",
+        description: "High performance gaming laptop",
+        price: "1299.99",
+        category: "Electronics",
+        inStock: true,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+
+      const mockCount = [{ count: 12 }]; // 12 total items
+
+      // Mock cache miss
+      mockRedis.get.mockResolvedValue(null);
+
+      // Mock database responses with proper chaining
+      const mockProductsQuery = {
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        orderBy: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        offset: vi.fn().mockResolvedValue(mockProducts),
+      };
+
+      const mockCountQuery = {
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockResolvedValue(mockCount),
+      };
+
+      (db.select as Mock)
+        .mockReturnValueOnce(mockProductsQuery)
+        .mockReturnValueOnce(mockCountQuery);
+
+      // Act
+      const req = mockRequest({ query: searchParams });
+      const res = mockResponse();
+      await ProductCtrl.searchProducts(req, res);
+
+      // Assert
+      expect(res.status).toHaveBeenCalledWith(StatusCodes.OK);
+      expect(res.json).toHaveBeenCalledWith({
+        results: mockProducts,
+        total: 12,
+        page: 2,
+        totalPages: 3, // 12 items / 5 per page = 2.4 → ceil to 3
+        hasNext: true, // Page 2 of 3 has next page
+        hasPrev: true, // Page 2 of 3 has previous page
+      });
     });
   });
 });
